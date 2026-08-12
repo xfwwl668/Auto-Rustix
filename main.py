@@ -21,7 +21,7 @@ from datetime import datetime
 from urllib.parse import unquote, urlsplit
 
 from playwright.sync_api import sync_playwright, Page, TimeoutError as PWTimeout
-from playwright_stealth import stealth_sync
+from playwright_stealth import stealth
 
 import notify
 
@@ -191,7 +191,7 @@ def process_account(account: dict, playwright, headless: bool = True) -> dict:
             locale="en-US",
         )
         page = context.new_page()
-        stealth_sync(page)
+        stealth(page)
         page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         console_lines = []
         def on_console(msg):
