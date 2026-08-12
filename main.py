@@ -20,6 +20,7 @@ import argparse
 from datetime import datetime
 
 from playwright.sync_api import sync_playwright, Page, TimeoutError as PWTimeout
+from playwright_stealth import stealth_sync
 
 import notify
 
@@ -383,10 +384,14 @@ def process_account(account: dict, playwright, headless: bool = True) -> dict:
             viewport={"width": 1366, "height": 800},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36",
+            "Chrome/128.0.0.0 Safari/537.36",
             locale="en-US",
         )
         page = context.new_page()
+        stealth_sync(page)
+        page.add_init_script("Object.defineProperty(navigator, \"webdriver\", {get: () => undefined})")
+        stealth_sync(page)
+        page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
         # 收集控制台消息
         console_lines = []
