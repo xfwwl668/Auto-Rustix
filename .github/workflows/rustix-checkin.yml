@@ -1,33 +1,23 @@
 name: rustix-auto-alive
 
 on:
-  # 定时触发（已启用，由 定时 触发）
-   schedule:
-     - cron: '0 */6 * * *'
-   workflow_dispatch:
-  # 已停用 Uptime Kuma Webhook 触发（服务器离线时）
-  # 没有 uptime 可删除下面两行，并将定时触发重新启用
-   repository_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+  repository_dispatch:
     types: [rustix]
 
-# 同一时间只允许一个实例运行
 concurrency:
   group: rustix-auto
   cancel-in-progress: false
 
 jobs:
   rustix-alive:
-    # workflow_dispatch 始终执行；repository_dispatch 仅 status 含 Down 时执行
     if: github.event_name != 'repository_dispatch' || contains(github.event.client_payload.status, 'Down')
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
-      - name: 🐛 调试 - 打印收到的 client_payload
-        run: |
-          echo "event_name: ${{ github.event_name }}"
-          echo 'client_payload: ${{ toJSON(github.event.client_payload) }}'
-
       - name: 检出代码
         uses: actions/checkout@v6
 
@@ -39,7 +29,6 @@ jobs:
           cache-dependency-path: requirements.txt
 
       - name: 安装依赖
-        #working-directory: rustix
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
@@ -47,16 +36,56 @@ jobs:
       - name: 安装 Playwright 浏览器
         run: python -m playwright install --with-deps chromium
 
-      - name: 运行自动启动脚本
-        #working-directory: rustix
+      - name: 启动代理并运行脚本
         env:
-          # 从 GitHub Secrets 读取账号，格式：邮箱:密码,邮箱:密码
-          # 例：a@example.com:pwd1,b@example.com:pwd2
           ACCOUNTS: ${{ secrets.RUSTIX_ACCOUNTS }}
-          # Telegram 通知（可选，未配置 Secret 则不推送）
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        run: python main.py
+          TROJAN_URL: ${{ secrets.PROXY_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TROJAN_URL:-}" ]; then
+            echo "未配置 PROXY_URL Secret"
+            exit 1
+          fi
+
+          SING_BOX_VERSION="$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest | python -c 'import json, sys; print(json.load(sys.stdin)["tag_name"])')"
+          SING_BOX_ARCHIVE="sing-box-${SING_BOX_VERSION#v}-linux-amd64.tar.gz"
+          SING_BOX_URL="https://github.com/SagerNet/sing-box/releases/download/${SING_BOX_VERSION}/${SING_BOX_ARCHIVE}"
+          mkdir -p /tmp/sing-box
+          curl -fsSL "$SING_BOX_URL" -o /tmp/sing-box.tar.gz
+          tar -xzf /tmp/sing-box.tar.gz --strip-components=1 -C /tmp/sing-box
+
+          TROJAN_URL="$TROJAN_URL" python - <<'PYCONFIG'
+          import json, os
+          from pathlib import Path
+          from urllib.parse import parse_qs, unquote, urlsplit
+          parsed = urlsplit(os.environ["TROJAN_URL"])
+          query = parse_qs(parsed.query)
+          sni = query.get("sni", [parsed.hostname])[0]
+          ws_host = query.get("host", [sni])[0]
+          ws_path = unquote(query.get("path", ["/"])[0])
+          password = parsed.username or parsed.password
+          
+          config = {
+              "inbounds": [{"type": "mixed", "listen": "127.0.0.1", "listen_port": 1080}],
+              "outbounds": [{
+                  "type": "trojan",
+                  "tag": "proxy",
+                  "server": parsed.hostname,
+                  "server_port": parsed.port,
+                  "password": password,
+                  "tls": {"enabled": True, "server_name": sni},
+                  "transport": {"type": "ws", "path": ws_path, "headers": {"Host": ws_host}},
+              }],
+              "route": {"final": "proxy"},
+          }
+          Path("/tmp/sing-box-config.json").write_text(json.dumps(config))
+          PYCONFIG
+
+          /tmp/sing-box/sing-box run -c /tmp/sing-box-config.json > /dev/null 2>&1 &
+          sleep 2
+          PROXY_URL=socks5://127.0.0.1:1080 python main.py
 
       - name: 上传运行日志
         if: always()
@@ -64,7 +93,6 @@ jobs:
         with:
           name: run-log
           path: |
-            rustix-auto/run.log
-            rustix-auto/debug_*.png
-          if-no-files-found: ignore
+            run.log
+            debug_*.png
           retention-days: 7
