@@ -15,7 +15,7 @@ jobs:
   rustix-alive:
     if: github.event_name != 'repository_dispatch' || contains(github.event.client_payload.status, 'Down')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
 
     steps:
       - name: 检出代码
@@ -24,18 +24,28 @@ jobs:
       - name: 设置 Python
         uses: actions/setup-python@v6
         with:
-          python-version: '3.13'
+          python-version: '3.11'
           cache: 'pip'
           cache-dependency-path: requirements.txt
 
-      - name: 安装依赖
+      - name: 安装系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb ffmpeg unzip curl gnupg
+          wget -q -O /tmp/google-chrome-stable_current_amd64.deb \
+            https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo dpkg -i /tmp/google-chrome-stable_current_amd64.deb || sudo apt-get install -f -y
+
+      - name: 安装 Python 依赖
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install --upgrade playwright playwright-stealth
 
-      - name: 安装 Playwright 浏览器
-        run: python -m playwright install --with-deps chromium
+      - name: 启用 WARP 网络（换干净 IP 过防护）
+        uses: fscarmen/warp-on-actions@v1.3
+        with:
+          stack: dual
+          mode: client
 
       - name: 启动代理并运行脚本
         env:
@@ -45,48 +55,50 @@ jobs:
           TROJAN_URL: ${{ secrets.PROXY_URL }}
         run: |
           set -euo pipefail
-          if [ -z "${TROJAN_URL:-}" ]; then
-            echo "未配置 PROXY_URL Secret"
-            exit 1
+          PROXY_ARG=""
+          if [ -n "${TROJAN_URL:-}" ]; then
+            SING_BOX_VERSION="$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest | python -c 'import json, sys; print(json.load(sys.stdin)["tag_name"])')"
+            SING_BOX_ARCHIVE="sing-box-${SING_BOX_VERSION#v}-linux-amd64.tar.gz"
+            SING_BOX_URL="https://github.com/SagerNet/sing-box/releases/download/${SING_BOX_VERSION}/${SING_BOX_ARCHIVE}"
+            mkdir -p /tmp/sing-box
+            curl -fsSL "$SING_BOX_URL" -o /tmp/sing-box.tar.gz
+            tar -xzf /tmp/sing-box.tar.gz --strip-components=1 -C /tmp/sing-box
+
+            TROJAN_URL="$TROJAN_URL" python - <<'PYCONFIG'
+            import json, os
+            from pathlib import Path
+            from urllib.parse import parse_qs, unquote, urlsplit
+            parsed = urlsplit(os.environ["TROJAN_URL"])
+            query = parse_qs(parsed.query)
+            sni = query.get("sni", [parsed.hostname])[0]
+            ws_host = query.get("host", [sni])[0]
+            ws_path = unquote(query.get("path", ["/"])[0])
+            password = parsed.username or parsed.password
+
+            config = {
+                "inbounds": [{"type": "mixed", "listen": "127.0.0.1", "listen_port": 1080}],
+                "outbounds": [{
+                    "type": "trojan",
+                    "tag": "proxy",
+                    "server": parsed.hostname,
+                    "server_port": parsed.port,
+                    "password": password,
+                    "tls": {"enabled": True, "server_name": sni},
+                    "transport": {"type": "ws", "path": ws_path, "headers": {"Host": ws_host}},
+                }],
+                "route": {"final": "proxy"},
+            }
+            Path("/tmp/sing-box-config.json").write_text(json.dumps(config))
+            PYCONFIG
+
+            /tmp/sing-box/sing-box run -c /tmp/sing-box-config.json > /dev/null 2>&1 &
+            sleep 2
+            PROXY_ARG="--proxy socks5://127.0.0.1:1080"
+            echo "已启用 sing-box 代理"
+          else
+            echo "未配置 TROJAN_URL，使用 WARP 直连"
           fi
-
-          SING_BOX_VERSION="$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest | python -c 'import json, sys; print(json.load(sys.stdin)["tag_name"])')"
-          SING_BOX_ARCHIVE="sing-box-${SING_BOX_VERSION#v}-linux-amd64.tar.gz"
-          SING_BOX_URL="https://github.com/SagerNet/sing-box/releases/download/${SING_BOX_VERSION}/${SING_BOX_ARCHIVE}"
-          mkdir -p /tmp/sing-box
-          curl -fsSL "$SING_BOX_URL" -o /tmp/sing-box.tar.gz
-          tar -xzf /tmp/sing-box.tar.gz --strip-components=1 -C /tmp/sing-box
-
-          TROJAN_URL="$TROJAN_URL" python - <<'PYCONFIG'
-          import json, os
-          from pathlib import Path
-          from urllib.parse import parse_qs, unquote, urlsplit
-          parsed = urlsplit(os.environ["TROJAN_URL"])
-          query = parse_qs(parsed.query)
-          sni = query.get("sni", [parsed.hostname])[0]
-          ws_host = query.get("host", [sni])[0]
-          ws_path = unquote(query.get("path", ["/"])[0])
-          password = parsed.username or parsed.password
-          
-          config = {
-              "inbounds": [{"type": "mixed", "listen": "127.0.0.1", "listen_port": 1080}],
-              "outbounds": [{
-                  "type": "trojan",
-                  "tag": "proxy",
-                  "server": parsed.hostname,
-                  "server_port": parsed.port,
-                  "password": password,
-                  "tls": {"enabled": True, "server_name": sni},
-                  "transport": {"type": "ws", "path": ws_path, "headers": {"Host": ws_host}},
-              }],
-              "route": {"final": "proxy"},
-          }
-          Path("/tmp/sing-box-config.json").write_text(json.dumps(config))
-          PYCONFIG
-
-          /tmp/sing-box/sing-box run -c /tmp/sing-box-config.json > /dev/null 2>&1 &
-          sleep 2
-          PROXY_URL=socks5://127.0.0.1:1080 python main.py
+          python main.py $PROXY_ARG
 
       - name: 上传运行日志
         if: always()
