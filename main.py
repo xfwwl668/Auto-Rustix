@@ -416,9 +416,16 @@ def process_account(account: dict, proxy_config: str = None) -> dict:
         return result
 
     try:
-        with SB(uc=True, test=True, locale="en", headed=False,
-                proxy=proxy_config,
-                chromium_arg="--disable-blink-features=AutomationControlled") as sb:
+        sb_kwargs = dict(
+            uc=True,
+            test=True,
+            locale="en",
+            headed=False,
+            chromium_arg="--disable-blink-features=AutomationControlled",
+        )
+        if proxy_config:
+            sb_kwargs["proxy"] = proxy_config
+        with SB(**sb_kwargs) as sb:
             # 监听控制台消息（通过 CDP Runtime.consoleAPICalled）
             console_lines = []
             def on_console_msg(msg):

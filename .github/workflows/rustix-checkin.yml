@@ -47,37 +47,17 @@ jobs:
           stack: dual
           mode: client
 
-      - name: 启动代理并运行脚本
+      - name: 运行保活脚本
         env:
           ACCOUNTS: ${{ secrets.RUSTIX_ACCOUNTS }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          TROJAN_URL: ${{ secrets.PROXY_URL }}
         run: |
-          set -euo pipefail
-          PROXY_ARG=""
-          if [ -n "${TROJAN_URL:-}" ]; then
-            SING_BOX_VERSION="$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest | python -c 'import json, sys; print(json.load(sys.stdin)["tag_name"])')"
-            SING_BOX_ARCHIVE="sing-box-${SING_BOX_VERSION#v}-linux-amd64.tar.gz"
-            SING_BOX_URL="https://github.com/SagerNet/sing-box/releases/download/${SING_BOX_VERSION}/${SING_BOX_ARCHIVE}"
-            mkdir -p /tmp/sing-box
-            curl -fsSL "$SING_BOX_URL" -o /tmp/sing-box.tar.gz
-            tar -xzf /tmp/sing-box.tar.gz --strip-components=1 -C /tmp/sing-box
-
-            TROJAN_URL="$TROJAN_URL" python3 gen_singbox_config.py
-
-            /tmp/sing-box/sing-box run -c /tmp/sing-box-config.json > /tmp/sing-box.log 2>&1 &
-            sleep 2
-            echo "=== sing-box 日志 ==="
-            cat /tmp/sing-box.log 2>/dev/null || echo "(no log)"
-            echo "=== 代理端口检查 ==="
-            curl -s --max-time 5 -x socks5h://127.0.0.1:1080 https://api.ip.sb/geoip 2>&1 || echo "代理不可用"
-            PROXY_ARG="--proxy socks5://127.0.0.1:1080"
-            echo "已启用 sing-box 代理"
-          else
-            echo "未配置 TROJAN_URL，使用 WARP 直连"
-          fi
-          python main.py $PROXY_ARG
+          echo "=== WARP 连通性检查 ==="
+          curl -s --max-time 8 https://api.ip.sb/geoip || echo "WARP 不可用"
+          echo ""
+          echo "使用 WARP 系统隧道直连（无显式代理）"
+          python main.py
 
       - name: 上传运行日志
         if: always()
