@@ -64,32 +64,17 @@ jobs:
             curl -fsSL "$SING_BOX_URL" -o /tmp/sing-box.tar.gz
             tar -xzf /tmp/sing-box.tar.gz --strip-components=1 -C /tmp/sing-box
 
-            TROJAN_URL="$TROJAN_URL" python - <<'PYCONFIG'
-            import json, os
-            from pathlib import Path
-            from urllib.parse import parse_qs, unquote, urlsplit
-            parsed = urlsplit(os.environ["TROJAN_URL"])
-            query = parse_qs(parsed.query)
-            sni = query.get("sni", [parsed.hostname])[0]
-            ws_host = query.get("host", [sni])[0]
-            ws_path = unquote(query.get("path", ["/"])[0])
-            password = parsed.username or parsed.password
-
-            config = {
-                "inbounds": [{"type": "mixed", "listen": "127.0.0.1", "listen_port": 1080}],
-                "outbounds": [{
-                    "type": "trojan",
-                    "tag": "proxy",
-                    "server": parsed.hostname,
-                    "server_port": parsed.port,
-                    "password": password,
-                    "tls": {"enabled": True, "server_name": sni},
-                    "transport": {"type": "ws", "path": ws_path, "headers": {"Host": ws_host}},
-                }],
-                "route": {"final": "proxy"},
-            }
-            Path("/tmp/sing-box-config.json").write_text(json.dumps(config))
-            PYCONFIG
+            # 生成 sing-box config（单行 Python，避免 YAML heredoc 缩进问题）
+            TROJAN_URL="$TROJAN_URL" python3 -c "
+import json,os
+from pathlib import Path
+from urllib.parse import parse_qs,unquote,urlsplit
+p=urlsplit(os.environ['TROJAN_URL']); q=parse_qs(p.query)
+sni=q.get('sni',[p.hostname])[0]; ws_host=q.get('host',[sni])[0]
+ws_path=unquote(q.get('path',['/'])[0]); pw=p.username or p.password
+cfg={'inbounds':[{'type':'mixed','listen':'127.0.0.1','listen_port':1080}],'outbounds':[{'type':'trojan','tag':'proxy','server':p.hostname,'server_port':p.port,'password':pw,'tls':{'enabled':True,'server_name':sni},'transport':{'type':'ws','path':ws_path,'headers':{'Host':ws_host}}}],'route':{'final':'proxy'}}
+Path('/tmp/sing-box-config.json').write_text(json.dumps(cfg))
+"
 
             /tmp/sing-box/sing-box run -c /tmp/sing-box-config.json > /dev/null 2>&1 &
             sleep 2
