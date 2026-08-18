@@ -66,8 +66,12 @@ jobs:
 
             TROJAN_URL="$TROJAN_URL" python3 gen_singbox_config.py
 
-            /tmp/sing-box/sing-box run -c /tmp/sing-box-config.json > /dev/null 2>&1 &
+            /tmp/sing-box/sing-box run -c /tmp/sing-box-config.json > /tmp/sing-box.log 2>&1 &
             sleep 2
+            echo "=== sing-box 日志 ==="
+            cat /tmp/sing-box.log 2>/dev/null || echo "(no log)"
+            echo "=== 代理端口检查 ==="
+            curl -s --max-time 5 -x socks5h://127.0.0.1:1080 https://api.ip.sb/geoip 2>&1 || echo "代理不可用"
             PROXY_ARG="--proxy socks5://127.0.0.1:1080"
             echo "已启用 sing-box 代理"
           else
